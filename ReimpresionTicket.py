@@ -11,7 +11,7 @@ db = SQLAlchemy(app)
 
 # Modelo de la base de datos
 class Farmacia(db.Model):
-    __tablename__ = 'farmacia'
+    __tablename__ = 'farmacias'
     id = db.Column(db.Integer, primary_key=True)
     localidad = db.Column(db.String(100), nullable=False)
     usuario = db.Column(db.String(100), nullable=False)
