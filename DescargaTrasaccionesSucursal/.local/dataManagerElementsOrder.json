@@ -12,6 +12,7 @@
       "Path": "Main.xaml",
       "SortBy": 0,
       "VariablesSectionElementsOrder": [
+        "informacionExcel&Sequence_1",
         "destino&Sequence_1",
         "origen&Sequence_1",
         "urlTicket&Sequence_3",

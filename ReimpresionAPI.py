@@ -1,94 +1,139 @@
+from flask import Flask, jsonify, request, Response
+import logging
+from logging.handlers import RotatingFileHandler
+import pyodbc
+import threading
 import subprocess
-from flask import Flask, jsonify, request
-from flask_sqlalchemy import SQLAlchemy
-import pandas as pd
 import os
+from functools import wraps
+import unicodedata
+import re
 
 app = Flask(__name__)
 
-# Configuración de la base de datos MySQL
-app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://root:12345@localhost/reimpresiontickets'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+# Configuración del logging
+handler = RotatingFileHandler('app.log', maxBytes=10000, backupCount=1)
+handler.setLevel(logging.INFO)
+handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 
-db = SQLAlchemy(app)
+app.logger.addHandler(handler)
+app.logger.setLevel(logging.INFO)
 
-# Modelo de la base de datos
-class Farmacia(db.Model):
-    __tablename__ = 'farmacia'
-    id = db.Column(db.Integer, primary_key=True)
-    localidad = db.Column(db.String(100), nullable=False)
-    usuario = db.Column(db.String(100), nullable=False)
-    password = db.Column(db.String(100), nullable=False)
-    correo = db.Column(db.String(100), nullable=False)
+# Decorador para requerir autenticación básica
+def check_auth(username, password):
+    return username == 'Fanafesa2024' and password == 's4c4nd4_2024'
 
-@app.route('/buscar_localidad', methods=['GET'])
+def authenticate():
+    return Response(
+        'No se pudo verificar su nivel de acceso para esa URL.\n'
+        'Tienes que iniciar sesión con las credenciales adecuadas.', 401,
+        {'WWW-Authenticate': 'Basic realm="Login Required"'})
+
+def requires_auth(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        auth = request.authorization
+        if not auth or not check_auth(auth.username, auth.password):
+            return authenticate()
+        return f(*args, **kwargs)
+    return decorated
+
+@app.route('/reimpresion', methods=['GET'])
+def index():
+    return jsonify({'message': 'El servidor está funcionando correctamente!'})
+
+@app.route('/reimpresion/buscar_localidad', methods=['GET'])
+@requires_auth
 def buscar_localidad():
     nombre_localidad = request.args.get('localidad')
     cantidad = request.args.get('cantidad')
     fecha = request.args.get('fecha')
 
-    # Verifica que se haya proporcionado la localidad
     if not nombre_localidad:
-        return jsonify({'error': 'Falta el parámetro "localidad"'}), 400
+        return jsonify({'respuesta': 'Falta el parámetro "localidad"'}), 400
 
-    # Verifica que se haya proporcionado la cantidad
     if not cantidad:
-        return jsonify({'error': 'Falta el parámetro "cantidad"'}), 400
+        return jsonify({'respuesta': 'Falta el parámetro "cantidad"'}), 400
 
-    # Verifica que se haya proporcionado la fecha
     if not fecha:
-        return jsonify({'error': 'Falta el parámetro "fecha"'}), 400
+        return jsonify({'respuesta': 'Falta el parámetro "fecha"'}), 400
 
-    # Consulta la base de datos
-    resultado = Farmacia.query.filter_by(localidad=nombre_localidad).first()
+    # Convertir la localidad a mayúsculas y quitar acentos
+    nombre_localidad = normalize_string(nombre_localidad.upper())
 
-    if resultado:
-        response_data = {
-            'usuario': resultado.usuario,
-            'password': resultado.password,
-            'correo': resultado.correo,
-            'cantidad': cantidad,
-            'fecha': fecha
-        }
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
 
-        # Guardar la información en un archivo Excel
-        guardar_informacion_excel(response_data)
+        query = "SELECT * FROM rpa_farmacias WHERE localidad = ?"
+        cursor.execute(query, (nombre_localidad,))
+        row = cursor.fetchone()
 
-        # Ejecutar el RPA de UiPath si se encuentra la localidad
-        ejecutar_rpa(response_data)
+        if row:
+            response_data = {
+                'usuario': row.usuario,
+                'password': row.password,
+                'correo': "sergioarmandoalzagadiaz@gmail.com",
+                'cantidad': '$ ' + cantidad,
+                'fecha': fecha
+            }
+            response_data_user = {
+                'respuesta': 'El proceso se está ejecutando'
+            }
 
-        return jsonify(response_data)
-    else:
-        return jsonify({'error': 'Localidad no encontrada'}), 404
+            insert_query = """
+            INSERT INTO rpa_info_consulta (usuario, password, correo, cantidad, fecha)
+            VALUES (?, ?, ?, ?, ?)
+            """
+            cursor.execute(insert_query, (response_data['usuario'], response_data['password'],
+                                           response_data['correo'], response_data['cantidad'],
+                                           response_data['fecha']))
+            conn.commit()
 
-def guardar_informacion_excel(data):
-    # Definir el nombre del archivo Excel
-    file_name = "informacion.xlsx"
+            threading.Thread(target=ejecutar_rpa).start()  # Ejecutar RPA sin pasar parámetros
 
-    # Crear un DataFrame con la información
-    df = pd.DataFrame([data])
+            return jsonify(response_data_user)
+        else:
+            return jsonify({'respuesta': 'Localidad no encontrada'}), 404
+    except pyodbc.Error as e:
+        app.logger.error(f"Database error: {e}")
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
 
-    # Guardar o sobrescribir el archivo Excel
-    df.to_excel(file_name, index=False)
+def get_db_connection():
+    connection_string = (
+        "DRIVER={ODBC Driver 17 for SQL Server};"
+        "Server=fanafesadbkenos.database.windows.net;"
+        "Database=fanafesadb;"
+        "UID=admindbkenos;"  
+        "PWD=K3n0sFanafes4!.*;"  
+    )
+    return pyodbc.connect(connection_string)
 
+def ejecutar_rpa():
+    script_dir = os.path.dirname(os.path.abspath(__file__))  # Obtiene la ruta del directorio actual del script
+    uirobot_path = "C:\\Users\\adminkenos\\AppData\\Local\\Programs\\UiPath\\Studio\\UiRobot.exe"
+    process_name = "DescargaTrasaccionesSucursal.1.0.13"
+    
+    # Construye la ruta completa del archivo .nupkg
+    nupkg_path = os.path.join(script_dir, f"{process_name}.nupkg")
 
-def ejecutar_rpa(params):
-    # Define la ruta de UiRobot.exe
-    uirobot_path = "C:\\Users\\sergio.alzaga\\AppData\\Local\\Programs\\UiPath\\Studio\\UiRobot.exe"
-
-    # Define el nombre del proceso de UiPath tal como está registrado
-    process_name = "ReimpresionTicket.1.0.7"
-
-    # Construir la lista de argumentos para UiRobot.exe
     args = [
         uirobot_path,
         "execute",
-        "--file", f"C:\\Users\\sergio.alzaga\\Documents\\UiPath\\{process_name}.nupkg",
-        "--input", f"{{\"usuario\":\"{params['usuario']}\",\"pass\":\"{params['password']}\",\"destino\":\"{params['correo']}\",\"importe\":\"{params['cantidad']}\",\"fechaBusqueda\":\"{params['fecha']}\"}}"
+        "--file", nupkg_path
     ]
+    try:
+        subprocess.run(args, check=True)
+        app.logger.info(f"RPA executed successfully.")
+    except subprocess.CalledProcessError as e:
+        app.logger.error(f"RPA execution error: {e}")
 
-    # Ejecutar el RPA
-    subprocess.run(args)
+def normalize_string(s):
+    # Normalizar la cadena para quitar acentos
+    nfkd_form = unicodedata.normalize('NFKD', s)
+    return re.sub(r'[\u0300-\u036f]', '', nfkd_form)
 
 if __name__ == '__main__':
     app.run(debug=True)
